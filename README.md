@@ -12,7 +12,7 @@ litch drift --config path/to/repo.yaml --templates path/to/templates
 Desde otro workflow se llama la composite action. `config` es el YAML del repo. `kinds` es opcional: un archivo con el mismo `metadata.name` reemplaza al kind del paquete. `templates` es el directorio con los workflows de la app. Litch no trae ninguno: copia el archivo a `.github/workflows/<name>.yml`. El repo `multi-repository-setup` es un caller de ejemplo con `configs/`, `kinds/` y `templates/`.
 
 ```yaml
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
 - uses: toconaskevin/litch@main
   with:
     command: plan
