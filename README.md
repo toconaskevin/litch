@@ -1,6 +1,6 @@
 # Litch
 
-Litch deja un repositorio de GitHub en el estado que declara un YAML: accesos, rulesets, ajustes del repo, variables, secrets, un workflow de CI y `CODEOWNERS`.
+Litch sets a GitHub repository to the state declared in a YAML file: access, rulesets, repository settings, variables, secrets, a CI workflow, and `CODEOWNERS`.
 
 ```bash
 pip install .
@@ -9,7 +9,7 @@ litch apply --config path/to/repo.yaml --templates path/to/templates
 litch drift --config path/to/repo.yaml --templates path/to/templates
 ```
 
-Desde otro workflow se llama la composite action. `config` es el YAML del repo. `kinds` es opcional: un archivo con el mismo `metadata.name` reemplaza al kind del paquete. `templates` es el directorio con los workflows de la app. Litch no trae ninguno: copia el archivo a `.github/workflows/<name>.yml`. El repo `multi-repository-setup` es un caller de ejemplo con `configs/`, `kinds/` y `templates/`.
+Another workflow calls the composite action. `config` is the repository YAML. `kinds` is optional: a file with the same `metadata.name` replaces the packaged kind. `templates` is the directory that holds the app workflows. Litch ships none of them: it copies the file to `.github/workflows/<name>.yml`. The `multi-repository-setup` repository is an example caller, with `configs/`, `kinds/`, and `templates/`.
 
 ```yaml
 - uses: actions/checkout@v7
@@ -21,15 +21,15 @@ Desde otro workflow se llama la composite action. `config` es el YAML del repo. 
     templates: templates
 ```
 
-El job pide `id-token: write` y pasa las variables del provider en `env`. El token de GitHub sigue saliendo del vault.
+The job requests `id-token: write` and passes the provider variables in `env`. The GitHub token still comes from the vault.
 
-`plan` muestra el diff y no escribe. `apply` lo aplica. `drift` sale con código 1 si algo declarado no coincide. Una segunda corrida sobre el mismo estado imprime `sin cambios`.
+`plan` prints the diff and writes nothing. `apply` applies it. `drift` exits with code 1 when something declared does not match. A second run against the same state prints `sin cambios`.
 
-Lo que no está en el YAML no se toca, salvo los usuarios y equipos de `access`: si se quitan del archivo, el apply los quita del repo.
+Anything absent from the YAML stays untouched, except users and teams under `access`: removing them from the file removes them from the repository on apply.
 
-## Configuración
+## Configuration
 
-Cada archivo declara `apiVersion: litch.dev/v1` y un `kind`. El repo y el resto van así:
+Every file declares `apiVersion: litch.dev/v1` and a `kind`. The repository and the rest look like this:
 
 ```yaml
 apiVersion: litch.dev/v1
@@ -40,9 +40,9 @@ spec:
     provider: azure
 ```
 
-Cada kind, incluidos `single-app` y `multi-app`, es un `ConfigDefinition`. Litch los carga del paquete y, si existe, de `kinds/` junto al YAML del repo o del directorio `--definitions`. Un archivo con el mismo nombre reemplaza al del paquete.
+Every kind, including `single-app` and `multi-app`, is a `ConfigDefinition`. Litch loads them from the package and, when present, from `kinds/` next to the repository YAML or from the `--definitions` directory. A file with the same name replaces the packaged one.
 
-El código acepta los bloques que sabe escribir en GitHub: `access`, `rulesets`, `repo_settings`, `secrets`, `actions`, `codeowners` y `apps`. El `allow` del kind elige cuáles entran. `apps`, cuando el kind lo permite, se aplana igual para todos: una fila de `CODEOWNERS` por path, variables y secrets al repo, y un workflow por nombre. `multi-app` permite `apps` y lo exige. `custom01` declara `base: single-app`, hereda ese `allow`, y suma `required`, `defaults` y `forbid`.
+The code accepts the blocks it knows how to write to GitHub: `access`, `rulesets`, `repo_settings`, `secrets`, `actions`, `codeowners`, and `apps`. The kind's `allow` chooses which of them are accepted. When the kind allows `apps`, Litch flattens them the same way for every kind: one `CODEOWNERS` row per path, variables and secrets on the repository, and one workflow per name. `multi-app` allows `apps` and requires it. `custom01` declares `base: single-app`, inherits that `allow`, and adds `required`, `defaults`, and `forbid`.
 
 ```yaml
 apiVersion: litch.dev/v1
@@ -58,16 +58,16 @@ spec:
   forbid: [actions.workflows]
 ```
 
-La instancia usa `kind: custom01`. Litch mezcla los defaults de la cadena (el valor de la instancia gana), comprueba `required` y `forbid`, y aplica los bloques permitidos.
+The instance uses `kind: custom01`. Litch merges defaults down the chain (the instance value wins), checks `required` and `forbid`, and applies the blocks that are allowed.
 
-El bloque `secrets` solo nombra el provider:
+The `secrets` block only names the provider:
 
 ```yaml
 secrets:
   provider: azure   # azure | aws | gcp
 ```
 
-No van ahí el role ARN, la service account, el vault ni el tenant. Esos valores los define quien opera Litch, en el entorno, con los nombres de abajo. El workflow que llama a la action es el mismo para las tres nubes: pide `id-token: write` y pasa esas variables.
+The role ARN, service account, vault, and tenant stay out of that block. The operator sets those values in the environment, under the names below. The workflow that calls the action is the same for all three clouds: it requests `id-token: write` and passes those variables.
 
 | Provider | Variables |
 | --- | --- |
@@ -75,20 +75,20 @@ No van ahí el role ARN, la service account, el vault ni el tenant. Esos valores
 | `aws` | `AWS_ROLE_ARN`, `AWS_REGION` |
 | `gcp` | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` |
 
-Si falta una, Litch sale antes de llamar a GitHub.
+If one is missing, Litch exits before calling GitHub.
 
-El nombre de `actions.secrets` es el nombre en el vault y en GitHub. El token de la API sale del vault con el nombre fijo `litch-github-token` y no se repite en el YAML. En Azure Key Vault los guiones bajos del nombre se leen como guiones (`DEPLOY_TOKEN` busca `DEPLOY-TOKEN`).
+The name in `actions.secrets` is the name in the vault and in GitHub. The API token comes from the vault under the fixed name `litch-github-token` and is not repeated in the YAML. In Azure Key Vault, underscores in the name are read as hyphens (`DEPLOY_TOKEN` looks up `DEPLOY-TOKEN`).
 
-OIDC, cuando Litch corre en GitHub Actions, pide el JWT con una audiencia fija del código: `api://AzureADTokenExchange` en Azure, `sts.amazonaws.com` en AWS, y el valor de `GCP_WORKLOAD_IDENTITY_PROVIDER` en GCP. En local no hay ese JWT; el provider `local` lee el valor de una variable de entorno con el mismo nombre (los guiones pasan a guiones bajos en mayúsculas) y no forma parte del camino de portfolio.
+When Litch runs in GitHub Actions, OIDC requests the JWT with an audience fixed in the code: `api://AzureADTokenExchange` for Azure, `sts.amazonaws.com` for AWS, and the value of `GCP_WORKLOAD_IDENTITY_PROVIDER` for GCP. There is no such JWT locally. The `local` provider reads the value from an environment variable of the same name (hyphens become uppercase underscores) and sits outside the portfolio path.
 
-GitHub no devuelve el valor de un secret. Si el nombre ya existe, apply no lo reescribe. Para rotarlo, se borra en el repo y se vuelve a aplicar.
+GitHub does not return the value of a secret. If the name already exists, apply does not rewrite it. To rotate it, delete it on the repository and apply again.
 
-## Permisos del token
+## Token permissions
 
-El token guardado como `litch-github-token` necesita, sobre el repo de prueba, Administration, Contents, Workflows, Secrets y Variables en lectura y escritura. Si el YAML nombra equipos, el repo está en una organización y el token también puede administrar equipos. Los equipos y usuarios del YAML ya existen; Litch no crea cuentas.
+The token stored as `litch-github-token` needs Administration, Contents, Workflows, Secrets, and Variables, read and write, on the repository under test. If the YAML names teams, the repository is in an organization and the token can administer teams as well. Teams and users named in the YAML already exist; Litch does not create accounts.
 
-`access.teams[].name` es el slug del equipo. Los rulesets de un repo privado piden GitHub Team; en un repo público alcanza la cuenta gratuita.
+`access.teams[].name` is the team slug. Rulesets on a private repository require GitHub Team; a public repository works on the free plan.
 
 ## Workflows
 
-`actions.workflows[].template` es el nombre de un archivo en el directorio `templates`, sin la extensión. Litch lo escribe en `.github/workflows/<name>.yml` sin cambiarle el contenido. El check es el que declara ese archivo. Si el config nombra un template que no está en el directorio, Litch falla. Un kind sin workflows no necesita el directorio.
+`actions.workflows[].template` is the name of a file in the `templates` directory, without the extension. Litch writes it to `.github/workflows/<name>.yml` and leaves the contents unchanged. The status check is the one that file declares. If the config names a template that is not in the directory, Litch fails. A kind with no workflows does not need the directory.
