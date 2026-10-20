@@ -62,7 +62,8 @@ class AzureSource(SecretSource):
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
-            raise SecretError(f"azure key vault returned {exc.code} for {vault_name('azure', name)}") from None
+            vault_secret = vault_name("azure", name)
+            raise _secret_error(f"azure: key vault rejected {vault_secret} ({exc.code})", exc) from None
         value = body.get("value")
         return value if isinstance(value, str) and value else None
 
@@ -77,11 +78,10 @@ class AwsSource(SecretSource):
         try:
             body = _json(url, payload, headers)
         except urllib.error.HTTPError as exc:
-            if exc.code == 400:
-                detail = exc.read().decode("utf-8", errors="replace")
-                if "ResourceNotFoundException" in detail:
-                    return None
-            raise SecretError(f"aws secrets manager returned {exc.code}") from None
+            raw = _error_body(exc)
+            if exc.code == 400 and "ResourceNotFoundException" in raw:
+                return None
+            raise _secret_error(f"aws: secrets manager rejected {name} ({exc.code})", raw) from None
         value = body.get("SecretString")
         return value if isinstance(value, str) and value else None
 
@@ -100,7 +100,7 @@ class GcpSource(SecretSource):
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
-            raise SecretError(f"gcp secret manager returned {exc.code}") from None
+            raise _secret_error(f"gcp: secret manager rejected {name} ({exc.code})", exc) from None
         data = (body.get("payload") or {}).get("data")
         if not isinstance(data, str) or not data:
             return None
@@ -113,13 +113,16 @@ def github_oidc_token(audience: str) -> str:
     url = os.environ.get(GITHUB_OIDC_URL, "").strip()
     bearer = os.environ.get(GITHUB_OIDC_TOKEN, "").strip()
     if not url or not bearer:
-        raise SecretError("OIDC is available when Litch runs in GitHub Actions (id-token: write)")
+        raise SecretError("the calling job must set permissions: id-token: write so GitHub can issue an OIDC token")
     joiner = "&" if "?" in url else "?"
     request = urllib.request.Request(
         f"{url}{joiner}audience={urllib.parse.quote(audience, safe='')}",
         headers={"Authorization": f"bearer {bearer}", "Accept": "application/json"},
     )
-    body = _read(request)
+    try:
+        body = _read(request)
+    except urllib.error.HTTPError as exc:
+        raise _secret_error(f"github: OIDC token request failed ({exc.code})", exc) from None
     token = body.get("value")
     if not isinstance(token, str) or not token:
         raise SecretError("GitHub did not return an OIDC token")
@@ -139,7 +142,15 @@ def _azure_token() -> str:
         }
     ).encode()
     url = f"https://login.microsoftonline.com/{urllib.parse.quote(tenant, safe='')}/oauth2/v2.0/token"
-    body = _json(url, form, {"Content-Type": "application/x-www-form-urlencoded"})
+    audience = OIDC_AUDIENCE["azure"]
+    client = os.environ["AZURE_CLIENT_ID"]
+    try:
+        body = _json(url, form, {"Content-Type": "application/x-www-form-urlencoded"})
+    except urllib.error.HTTPError as exc:
+        raise _secret_error(
+            f"azure: rejected the GitHub OIDC token ({exc.code}) for client {client} audience {audience}",
+            exc,
+        ) from None
     token = body.get("access_token")
     if not isinstance(token, str) or not token:
         raise SecretError("Azure did not return an access token")
@@ -162,11 +173,15 @@ def _aws_credentials() -> dict[str, str]:
         data=form,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
+    role = os.environ["AWS_ROLE_ARN"]
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = response.read()
     except urllib.error.HTTPError as exc:
-        raise SecretError(f"aws sts returned {exc.code}") from None
+        raise _secret_error(
+            f"aws: rejected the GitHub OIDC token ({exc.code}) for role {role}",
+            exc,
+        ) from None
     root = ElementTree.fromstring(payload)
     ns = {"s": "https://sts.amazonaws.com/doc/2011-06-15/"}
     creds = root.find(".//s:Credentials", ns)
@@ -233,20 +248,30 @@ def _gcp_token() -> str:
             "subject_token": assertion,
         }
     ).encode()
-    exchanged = _json(
-        "https://sts.googleapis.com/v1/token",
-        form,
-        {"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    try:
+        exchanged = _json(
+            "https://sts.googleapis.com/v1/token",
+            form,
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    except urllib.error.HTTPError as exc:
+        raise _secret_error(
+            f"gcp: rejected the GitHub OIDC token ({exc.code}) for provider {provider}",
+            exc,
+        ) from None
     federated = exchanged.get("access_token")
     if not isinstance(federated, str) or not federated:
         raise SecretError("gcp sts did not return an access token")
-    account = urllib.parse.quote(os.environ["GCP_SERVICE_ACCOUNT"], safe="")
-    generated = _json(
-        f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{account}:generateAccessToken",
-        json.dumps({"scope": ["https://www.googleapis.com/auth/cloud-platform"]}).encode(),
-        {"Authorization": f"Bearer {federated}", "Content-Type": "application/json"},
-    )
+    account = os.environ["GCP_SERVICE_ACCOUNT"]
+    quoted = urllib.parse.quote(account, safe="")
+    try:
+        generated = _json(
+            f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{quoted}:generateAccessToken",
+            json.dumps({"scope": ["https://www.googleapis.com/auth/cloud-platform"]}).encode(),
+            {"Authorization": f"Bearer {federated}", "Content-Type": "application/json"},
+        )
+    except urllib.error.HTTPError as exc:
+        raise _secret_error(f"gcp: could not mint a token for {account} ({exc.code})", exc) from None
     token = generated.get("accessToken")
     if not isinstance(token, str) or not token:
         raise SecretError("gcp did not return a service account token")
@@ -274,11 +299,88 @@ def _json(url: str, data: bytes | None = None, headers: dict[str, str] | None = 
 
 
 def _read(request: urllib.request.Request) -> dict:
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read()
-    except urllib.error.HTTPError:
-        raise
+    with urllib.request.urlopen(request, timeout=30) as response:
+        raw = response.read()
     if not raw:
         return {}
     return json.loads(raw.decode("utf-8"))
+
+
+def _error_body(exc: urllib.error.HTTPError) -> str:
+    return exc.read().decode("utf-8", errors="replace")
+
+
+def _secret_error(prefix: str, error: urllib.error.HTTPError | str) -> SecretError:
+    raw = error if isinstance(error, str) else _error_body(error)
+    detail = _detail_text(raw)
+    if len(detail) > 400:
+        detail = detail[:400].rstrip() + "..."
+    if detail:
+        return SecretError(f"{prefix}: {detail}")
+    return SecretError(prefix)
+
+
+def _detail_text(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw[:1] in "{[":
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            body = None
+        if isinstance(body, dict):
+            text = _json_detail(body)
+            if text:
+                return text
+    if raw[:1] == "<":
+        text = _xml_message(raw)
+        if text:
+            return text
+    return " ".join(raw.split())
+
+
+def _json_detail(body: dict) -> str:
+    error = body.get("error")
+    if isinstance(error, dict):
+        return _join(_plain(error.get("code")), _plain(error.get("message")))
+    description = _plain(body.get("error_description"))
+    if description:
+        return description
+    message = _plain(body.get("message") or body.get("Message"))
+    kind = _plain(body.get("__type")).rsplit("#", 1)[-1].rsplit(".", 1)[-1]
+    if kind and message:
+        return f"{kind}: {message}"
+    if message:
+        return message
+    if isinstance(error, str):
+        return _plain(error)
+    return ""
+
+
+def _xml_message(raw: str) -> str:
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return ""
+    code = ""
+    message = ""
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag == "Code" and node.text and not code:
+            code = " ".join(node.text.split())
+        elif tag == "Message" and node.text and not message:
+            message = " ".join(node.text.split())
+    return _join(code, message)
+
+
+def _plain(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())
+
+
+def _join(code: str, message: str) -> str:
+    if code and message:
+        return f"{code}: {message}"
+    return message or code

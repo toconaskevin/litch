@@ -1,11 +1,14 @@
+import io
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 
 from litch.cli import main
 from litch.config import ConfigError, load_config, parse_config, parse_definition
-from litch.github_api import role_name
+from litch.github_api import GitHub, GitHubError, role_name
 from litch.diff import Actual, diff_config, render_codeowners, render_workflow
 from litch.model import GITHUB_TOKEN_SECRET
 from litch.secrets import SecretError, open_source, vault_name
@@ -403,3 +406,139 @@ def test_local_source_reads_env(monkeypatch):
     monkeypatch.delenv("LITCH_GITHUB_TOKEN")
     assert open_source("local").get("litch-github-token") is None
     os.environ.pop("LITCH_GITHUB_TOKEN", None)
+
+
+class _Body:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+    def read(self):
+        return self.payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _http_error(code: int, body: str) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://example.test", code, "error", hdrs={}, fp=io.BytesIO(body.encode()))
+
+
+def _route(monkeypatch, routes):
+    def urlopen(request, timeout=30):
+        host = urllib.request.urlparse(request.full_url).netloc
+        result = routes[host]
+        if isinstance(result, Exception):
+            raise result
+        return _Body(result)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+
+def _azure_env(monkeypatch):
+    monkeypatch.setenv("AZURE_TENANT_ID", "tenant")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "client-id")
+    monkeypatch.setenv("AZURE_KEY_VAULT_URL", "https://vault.example")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example/token")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "bearer")
+
+
+def test_missing_oidc_tells_the_caller_to_set_id_token_write(monkeypatch):
+    _azure_env(monkeypatch)
+    monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_URL")
+    monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    with pytest.raises(SecretError, match="permissions: id-token: write"):
+        open_source("azure").get("litch-github-token")
+
+
+def test_azure_token_exchange_includes_the_provider_error(monkeypatch):
+    _azure_env(monkeypatch)
+    _route(monkeypatch, {
+        "oidc.example": b'{"value":"jwt"}',
+        "login.microsoftonline.com": _http_error(
+            401,
+            '{"error":"invalid_client","error_description":"AADSTS700213: No matching federated identity record"}',
+        ),
+    })
+    with pytest.raises(SecretError, match="AADSTS700213") as caught:
+        open_source("azure").get("litch-github-token")
+    message = str(caught.value)
+    assert "rejected the GitHub OIDC token (401)" in message
+    assert "client client-id" in message
+    assert "audience api://AzureADTokenExchange" in message
+
+
+def test_azure_key_vault_rejection_names_the_vault_hop(monkeypatch):
+    _azure_env(monkeypatch)
+    _route(monkeypatch, {
+        "oidc.example": b'{"value":"jwt"}',
+        "login.microsoftonline.com": b'{"access_token":"azure-token"}',
+        "vault.example": _http_error(403, '{"error":{"code":"Forbidden","message":"Caller is not authorized"}}'),
+    })
+    with pytest.raises(SecretError, match="key vault rejected litch-github-token \\(403\\): Forbidden: Caller is not authorized"):
+        open_source("azure").get("litch-github-token")
+
+
+def test_aws_sts_rejection_names_the_role(monkeypatch):
+    monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::1:role/litch")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example/token")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "bearer")
+    _route(monkeypatch, {
+        "oidc.example": b'{"value":"jwt"}',
+        "sts.amazonaws.com": _http_error(
+            403,
+            "<Error><Code>AccessDenied</Code><Message>Not authorized to perform sts:AssumeRoleWithWebIdentity</Message></Error>",
+        ),
+    })
+    with pytest.raises(SecretError, match="for role arn:aws:iam::1:role/litch") as caught:
+        open_source("aws").get("DEPLOY_TOKEN")
+    assert "AccessDenied: Not authorized to perform sts:AssumeRoleWithWebIdentity" in str(caught.value)
+
+
+def test_gcp_sts_rejection_names_the_provider(monkeypatch):
+    provider = "projects/1/locations/global/workloadIdentityPools/pool/providers/github"
+    monkeypatch.setenv("GCP_WORKLOAD_IDENTITY_PROVIDER", provider)
+    monkeypatch.setenv("GCP_SERVICE_ACCOUNT", "litch@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example/token")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "bearer")
+    _route(monkeypatch, {
+        "oidc.example": b'{"value":"jwt"}',
+        "sts.googleapis.com": _http_error(403, '{"error":"unauthorized","error_description":"The audience is not allowed"}'),
+    })
+    with pytest.raises(SecretError, match="The audience is not allowed") as caught:
+        open_source("gcp").get("DEPLOY_TOKEN")
+    assert f"for provider {provider}" in str(caught.value)
+
+
+def test_github_api_error_includes_the_message(monkeypatch):
+    def urlopen(request, timeout=30):
+        raise _http_error(403, '{"message":"Resource not accessible by integration"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    with pytest.raises(GitHubError, match="github 403 /repos/octocat/demo: Resource not accessible by integration"):
+        GitHub("token")._get("/repos/octocat/demo")
+
+
+def test_cli_prints_the_provider_error_on_one_line(tmp_path, monkeypatch, capsys):
+    _azure_env(monkeypatch)
+    _route(monkeypatch, {
+        "oidc.example": b'{"value":"jwt"}',
+        "login.microsoftonline.com": _http_error(
+            401,
+            '{"error":"invalid_client","error_description":"AADSTS700213: No matching federated identity record"}',
+        ),
+    })
+    config = tmp_path / "repo.yaml"
+    config.write_text(
+        "apiVersion: litch.dev/v1\nkind: single-app\nrepo: octocat/demo\nspec:\n  secrets:\n    provider: azure\n",
+        encoding="utf-8",
+    )
+    assert main(["plan", "--config", str(config)]) == 2
+    error = capsys.readouterr().err.strip().splitlines()
+    assert error == [
+        "azure: rejected the GitHub OIDC token (401) for client client-id audience api://AzureADTokenExchange: "
+        "AADSTS700213: No matching federated identity record"
+    ]

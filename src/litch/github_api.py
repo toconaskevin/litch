@@ -222,12 +222,29 @@ class GitHub:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise GitHubError(f"github 404 {path}") from None
-            raise GitHubError(f"github {exc.code} {path}") from None
+            detail = _github_detail(exc)
+            message = f"github {exc.code} {path}"
+            if detail:
+                message = f"{message}: {detail}"
+            raise GitHubError(message) from None
         if not raw:
             return {}
         return json.loads(raw.decode("utf-8"))
+
+
+def _github_detail(exc: urllib.error.HTTPError) -> str:
+    raw = exc.read().decode("utf-8", errors="replace").strip()
+    if not raw:
+        return ""
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return " ".join(raw.split())[:400]
+    if isinstance(body, dict):
+        message = body.get("message")
+        if isinstance(message, str) and message.strip():
+            return " ".join(message.split())
+    return ""
 
 
 def role_name(item: dict) -> str | None:
