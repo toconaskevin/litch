@@ -1,0 +1,15 @@
+apiVersion: litch.dev/v1
+kind: ConfigDefinition
+metadata:
+  name: multi-app
+spec:
+  allow:
+    - access
+    - rulesets
+    - repo_settings
+    - secrets
+    - actions
+    - codeowners
+    - apps
+  required:
+    - apps

@@ -1,0 +1,34 @@
+apiVersion: litch.dev/v1
+kind: single-app
+repo: toconaskevin/single-app-repo-for-litch
+spec:
+  access:
+    users:
+      - name: toconaskevin
+        permission: admin
+  rulesets:
+    - name: main
+      target: branch
+      ref: refs/heads/main
+      status_checks:
+        - ci
+      block_force_push: true
+  repo_settings:
+    allow_squash_merge: true
+    allow_merge_commit: false
+    delete_branch_on_merge: true
+    has_wiki: false
+  secrets:
+    provider: azure
+  actions:
+    variables:
+      - name: ENVIRONMENT
+        value: dev
+    workflows:
+      - name: ci
+        template: ci
+  codeowners:
+    - path: "*"
+      owners: ["@toconaskevin"]
+    - path: "/src/"
+      owners: ["@toconaskevin"]

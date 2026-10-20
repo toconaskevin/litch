@@ -1,0 +1,12 @@
+apiVersion: litch.dev/v1
+kind: ConfigDefinition
+metadata:
+  name: single-app
+spec:
+  allow:
+    - access
+    - rulesets
+    - repo_settings
+    - secrets
+    - actions
+    - codeowners

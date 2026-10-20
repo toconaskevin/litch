@@ -1,0 +1,38 @@
+apiVersion: litch.dev/v1
+kind: multi-app
+repo: toconaskevin/multi-app-repo-for-litch
+spec:
+  access:
+    users:
+      - name: toconaskevin
+        permission: admin
+  rulesets:
+    - name: main
+      target: branch
+      ref: refs/heads/main
+      status_checks:
+        - ci-api
+        - ci-web
+      block_force_push: true
+  secrets:
+    provider: azure
+  actions:
+    variables:
+      - name: ENVIRONMENT
+        value: dev
+  codeowners:
+    - path: "*"
+      owners: ["@toconaskevin"]
+  apps:
+    - name: api
+      path: /services/api/
+      codeowners: ["@toconaskevin"]
+      workflows:
+        - name: ci-api
+          template: ci-api
+    - name: web
+      path: /services/web/
+      codeowners: ["@toconaskevin"]
+      workflows:
+        - name: ci-web
+          template: ci-web

@@ -1,0 +1,16 @@
+apiVersion: litch.dev/v1
+kind: custom01
+repo: toconaskevin/custom-repo-for-litch
+spec:
+  access:
+    users:
+      - name: toconaskevin
+        permission: admin
+  rulesets:
+    - name: main
+      target: branch
+      ref: refs/heads/main
+      block_force_push: true
+  codeowners:
+    - path: "*"
+      owners: ["@toconaskevin"]
