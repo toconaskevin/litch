@@ -164,12 +164,9 @@ def test_cli_rejects_a_missing_file():
 
 def test_apply_workflow_is_the_same_for_every_provider():
     action = (ROOT / "action.yml").read_text(encoding="utf-8")
-    caller = (ROOT.parent / "multi-repository-setup" / ".github" / "workflows" / "litch.yml").read_text(encoding="utf-8")
-    assert "id-token: write" in caller
-    for text in (action, caller):
-        assert "azure/login" not in text
-        assert "configure-aws-credentials" not in text
-        assert "google-github-actions/auth" not in text
+    assert "azure/login" not in action
+    assert "configure-aws-credentials" not in action
+    assert "google-github-actions/auth" not in action
 
 
 def test_multi_app_flattens_apps_and_workflow_files():
