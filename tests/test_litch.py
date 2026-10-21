@@ -6,11 +6,20 @@ from pathlib import Path
 
 import pytest
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
 from litch.cli import main
 from litch.config import ConfigError, load_config, parse_config, parse_definition
 from litch.github_api import GitHub, GitHubError, role_name
+from litch.github_app import installation_auth
 from litch.diff import Actual, diff_config, render_codeowners, render_workflow
-from litch.model import GITHUB_TOKEN_SECRET
+from litch.model import (
+    GITHUB_APP_CLIENT_ID,
+    GITHUB_APP_ID,
+    GITHUB_APP_INSTALLATION_ID,
+    GITHUB_APP_PEM,
+)
 from litch.secrets import SecretError, open_source, vault_name
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,11 +115,7 @@ def test_plan_hides_secret_values_and_is_empty_when_the_repo_matches():
         workflows={".github/workflows/ci.yml": render_workflow("ci", config.template_dir)},
     )
     sentinel = "super-secret-value"
-    changes = diff_config(
-        config,
-        actual,
-        {GITHUB_TOKEN_SECRET: sentinel},
-    )
+    changes = diff_config(config, actual, {"DEPLOY_TOKEN": sentinel})
     assert changes == []
     rendered = "\n".join(change.line() for change in changes)
     assert sentinel not in rendered
@@ -135,29 +140,33 @@ def test_plan_reports_access_ruleset_and_missing_secret():
         codeowners=None,
         workflows={},
     )
-    changes = diff_config(config, actual, {"DEPLOY_TOKEN": None, GITHUB_TOKEN_SECRET: "token"})
+    changes = diff_config(config, actual, {"DEPLOY_TOKEN": None})
     lines = [change.line() for change in changes]
     assert any(line.startswith("- access.user someone") for line in lines)
     assert any(line.startswith("+ ruleset main") for line in lines)
     assert any("secret DEPLOY_TOKEN" in line and "missing in vault" in line for line in lines)
-    assert "token" not in "\n".join(lines)
 
 
 def test_maintain_comes_from_the_permissions_object():
     assert role_name({"permission": "push", "permissions": {"admin": False, "maintain": True, "push": True, "pull": True}}) == "maintain"
 
 
-def test_plan_stops_before_github_without_a_token(tmp_path, monkeypatch, capsys):
+def test_plan_stops_before_github_without_app_secrets(tmp_path, monkeypatch, capsys):
     config = tmp_path / "repo.yaml"
     config.write_text(
         "apiVersion: litch.dev/v1\nkind: single-app\nrepo: octocat/demo\nspec:\n  secrets:\n    provider: local\n",
         encoding="utf-8",
     )
-    monkeypatch.delenv("LITCH_GITHUB_TOKEN", raising=False)
-    monkeypatch.delenv("litch-github-token", raising=False)
+    for name in (
+        GITHUB_APP_CLIENT_ID,
+        GITHUB_APP_ID,
+        GITHUB_APP_INSTALLATION_ID,
+        GITHUB_APP_PEM,
+    ):
+        monkeypatch.delenv(name.replace("-", "_").upper(), raising=False)
     assert main(["plan", "--config", str(config)]) == 2
     captured = capsys.readouterr()
-    assert "litch-github-token" in captured.err
+    assert "missing GitHub App secrets in vault" in captured.err
     assert captured.out == ""
 
 
@@ -199,7 +208,7 @@ def test_multi_app_flattens_apps_and_workflow_files():
         codeowners=render_codeowners(config),
         workflows={item.path: render_workflow(item.template, config.template_dir) for item in config.workflows},
     )
-    assert diff_config(config, actual, {GITHUB_TOKEN_SECRET: "token"}) == []
+    assert diff_config(config, actual, {}) == []
 
 
 def test_app_variables_merge_and_duplicates_fail():
@@ -392,20 +401,25 @@ def test_cli_loads_a_custom_kind_from_definitions(tmp_path, monkeypatch, capsys)
         "apiVersion: litch.dev/v1\nkind: custom01\nrepo: octocat/demo\nspec: {}\n",
         encoding="utf-8",
     )
-    monkeypatch.delenv("LITCH_GITHUB_TOKEN", raising=False)
-    monkeypatch.delenv("litch-github-token", raising=False)
+    for name in (
+        GITHUB_APP_CLIENT_ID,
+        GITHUB_APP_ID,
+        GITHUB_APP_INSTALLATION_ID,
+        GITHUB_APP_PEM,
+    ):
+        monkeypatch.delenv(name.replace("-", "_").upper(), raising=False)
     assert main(["plan", "--config", str(config), "--definitions", str(kinds)]) == 2
     captured = capsys.readouterr()
-    assert "litch-github-token" in captured.err
+    assert "missing GitHub App secrets in vault" in captured.err
     assert "unknown kind" not in captured.err
 
 
 def test_local_source_reads_env(monkeypatch):
-    monkeypatch.setenv("LITCH_GITHUB_TOKEN", "abc")
-    assert open_source("local").get("litch-github-token") == "abc"
-    monkeypatch.delenv("LITCH_GITHUB_TOKEN")
-    assert open_source("local").get("litch-github-token") is None
-    os.environ.pop("LITCH_GITHUB_TOKEN", None)
+    monkeypatch.setenv("DEPLOY_TOKEN", "abc")
+    assert open_source("local").get("DEPLOY_TOKEN") == "abc"
+    monkeypatch.delenv("DEPLOY_TOKEN")
+    assert open_source("local").get("DEPLOY_TOKEN") is None
+    os.environ.pop("DEPLOY_TOKEN", None)
 
 
 class _Body:
@@ -450,7 +464,7 @@ def test_missing_oidc_tells_the_caller_to_set_id_token_write(monkeypatch):
     monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_URL")
     monkeypatch.delenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
     with pytest.raises(SecretError, match="permissions: id-token: write"):
-        open_source("azure").get("litch-github-token")
+        open_source("azure").get(GITHUB_APP_PEM)
 
 
 def test_azure_token_exchange_includes_the_provider_error(monkeypatch):
@@ -463,7 +477,7 @@ def test_azure_token_exchange_includes_the_provider_error(monkeypatch):
         ),
     })
     with pytest.raises(SecretError, match="AADSTS700213") as caught:
-        open_source("azure").get("litch-github-token")
+        open_source("azure").get(GITHUB_APP_PEM)
     message = str(caught.value)
     assert "rejected the GitHub OIDC token (401)" in message
     assert "client client-id" in message
@@ -477,8 +491,8 @@ def test_azure_key_vault_rejection_names_the_vault_hop(monkeypatch):
         "login.microsoftonline.com": b'{"access_token":"azure-token"}',
         "vault.example": _http_error(403, '{"error":{"code":"Forbidden","message":"Caller is not authorized"}}'),
     })
-    with pytest.raises(SecretError, match="key vault rejected litch-github-token \\(403\\): Forbidden: Caller is not authorized"):
-        open_source("azure").get("litch-github-token")
+    with pytest.raises(SecretError, match="key vault rejected litch-github-app-pem \\(403\\): Forbidden: Caller is not authorized"):
+        open_source("azure").get(GITHUB_APP_PEM)
 
 
 def test_aws_sts_rejection_names_the_role(monkeypatch):
@@ -519,7 +533,7 @@ def test_github_api_error_includes_the_message(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     with pytest.raises(GitHubError, match="github 403 /repos/octocat/demo: Resource not accessible by integration"):
-        GitHub("token")._get("/repos/octocat/demo")
+        GitHub("token", 1)._get("/repos/octocat/demo")
 
 
 def test_cli_prints_the_provider_error_on_one_line(tmp_path, monkeypatch, capsys):
@@ -541,4 +555,82 @@ def test_cli_prints_the_provider_error_on_one_line(tmp_path, monkeypatch, capsys
     assert error == [
         "azure: rejected the GitHub OIDC token (401) for client client-id audience api://AzureADTokenExchange: "
         "AADSTS700213: No matching federated identity record"
+    ]
+
+
+def _rsa_pem() -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+
+class _MapSource:
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def get(self, name: str) -> str | None:
+        return self.values.get(name)
+
+
+def test_installation_auth_mints_a_token(monkeypatch):
+    pem = _rsa_pem()
+    source = _MapSource({
+        GITHUB_APP_CLIENT_ID: "Iv23client",
+        GITHUB_APP_ID: "42",
+        GITHUB_APP_INSTALLATION_ID: "99",
+        GITHUB_APP_PEM: pem,
+    })
+
+    def urlopen(request, timeout=30):
+        assert request.full_url.endswith("/app/installations/99/access_tokens")
+        assert request.get_method() == "POST"
+        assert request.get_header("Authorization").startswith("Bearer ")
+        return _Body(b'{"token":"ghs_test_token"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    token, app_id = installation_auth(source)
+    assert token == "ghs_test_token"
+    assert app_id == 42
+
+
+def test_installation_auth_reports_github_errors(monkeypatch):
+    source = _MapSource({
+        GITHUB_APP_CLIENT_ID: "Iv23client",
+        GITHUB_APP_ID: "42",
+        GITHUB_APP_INSTALLATION_ID: "99",
+        GITHUB_APP_PEM: _rsa_pem(),
+    })
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda request, timeout=30: (_ for _ in ()).throw(
+            _http_error(401, '{"message":"A JSON web token could not be decoded"}')
+        ),
+    )
+    with pytest.raises(SecretError, match="installation token request failed \\(401\\)") as caught:
+        installation_auth(source)
+    assert "A JSON web token could not be decoded" in str(caught.value)
+
+
+def test_ruleset_body_includes_app_bypass():
+    from litch.github_api import _ruleset_body
+    from litch.model import RuleSet
+
+    body = _ruleset_body(
+        RuleSet(
+            name="main",
+            target="branch",
+            ref="refs/heads/main",
+            required_reviews=0,
+            dismiss_stale=False,
+            status_checks=("ci",),
+            block_force_push=True,
+        ),
+        42,
+    )
+    assert body["bypass_actors"] == [
+        {"actor_id": 42, "actor_type": "Integration", "bypass_mode": "always"}
     ]

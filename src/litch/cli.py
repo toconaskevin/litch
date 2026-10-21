@@ -4,7 +4,7 @@ import sys
 from litch.config import ConfigError, load_config
 from litch.engine import apply_changes, collect_values, plan
 from litch.github_api import GitHub, GitHubError
-from litch.model import GITHUB_TOKEN_SECRET
+from litch.github_app import installation_auth
 from litch.secrets import SecretError, open_source
 
 
@@ -19,11 +19,8 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config, args.definitions, args.templates)
         source = open_source(config.provider)
         values = collect_values(config, source)
-        token = values.get(GITHUB_TOKEN_SECRET)
-        if not token:
-            print(f"! secret {GITHUB_TOKEN_SECRET} missing in vault", file=sys.stderr)
-            return 2
-        changes = plan(config, GitHub(token), values)
+        token, app_id = installation_auth(source)
+        changes = plan(config, GitHub(token, app_id), values)
     except (ConfigError, SecretError, GitHubError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -43,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if changes:
         try:
-            apply_changes(config, GitHub(token), changes, values)
+            apply_changes(config, GitHub(token, app_id), changes, values)
         except GitHubError as exc:
             print(str(exc), file=sys.stderr)
             return 2

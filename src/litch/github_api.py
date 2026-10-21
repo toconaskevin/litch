@@ -26,8 +26,9 @@ class GitHubError(RuntimeError):
 
 
 class GitHub:
-    def __init__(self, token: str):
+    def __init__(self, token: str, app_id: int):
         self.token = token
+        self.app_id = app_id
 
     def fetch(self, config: Config) -> Actual:
         repo = self._get(f"/repos/{config.repo}")
@@ -70,7 +71,7 @@ class GitHub:
 
     def put_ruleset(self, config: Config, name: str) -> None:
         rule = next(item for item in config.rulesets if item.name == name)
-        body = _ruleset_body(rule)
+        body = _ruleset_body(rule, self.app_id)
         current = self._ruleset_index(config).get(name)
         if current is None:
             self._request("POST", f"/repos/{config.repo}/rulesets", body)
@@ -263,7 +264,7 @@ def encrypt_secret(public_key: str, value: str) -> str:
     return base64.b64encode(encrypted).decode("ascii")
 
 
-def _ruleset_body(rule) -> dict:
+def _ruleset_body(rule, app_id: int) -> dict:
     rules = []
     if rule.required_reviews or rule.dismiss_stale:
         rules.append(
@@ -295,6 +296,13 @@ def _ruleset_body(rule) -> dict:
         "target": "branch",
         "enforcement": "active",
         "conditions": {"ref_name": {"include": [rule.ref], "exclude": []}},
+        "bypass_actors": [
+            {
+                "actor_id": app_id,
+                "actor_type": "Integration",
+                "bypass_mode": "always",
+            }
+        ],
         "rules": rules,
     }
 

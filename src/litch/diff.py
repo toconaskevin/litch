@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from litch.model import GITHUB_TOKEN_SECRET, Config, ConfigError
+from litch.model import Config, ConfigError
 
 
 @dataclass(frozen=True)
@@ -109,9 +109,6 @@ def diff_config(config: Config, actual: Actual, secret_values: dict[str, str | N
             changes.append(Change("missing", f"secret {secret.name}", "missing in vault"))
         elif value and secret.name not in actual.secret_names:
             changes.append(Change("add", f"secret {secret.name}"))
-    token = secret_values.get(GITHUB_TOKEN_SECRET)
-    if not token:
-        changes.append(Change("missing", f"secret {GITHUB_TOKEN_SECRET}", "missing in vault"))
     desired_owners = render_codeowners(config)
     if config.codeowners and (actual.codeowners or "") != desired_owners:
         action = "add" if actual.codeowners is None else "update"
