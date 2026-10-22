@@ -13,7 +13,7 @@ from litch.cli import main
 from litch.config import ConfigError, load_config, parse_config, parse_definition
 from litch.github_api import GitHub, GitHubError, role_name
 from litch.github_app import installation_auth
-from litch.diff import Actual, diff_config, render_codeowners, render_workflow
+from litch.diff import Actual, Change, diff_config, render_codeowners, render_workflow
 from litch.model import (
     GITHUB_APP_CLIENT_ID,
     GITHUB_APP_ID,
@@ -21,6 +21,7 @@ from litch.model import (
     GITHUB_APP_PEM,
 )
 from litch.secrets import SecretError, open_source, vault_name
+from litch.summary import write_run_summary
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -634,3 +635,43 @@ def test_ruleset_body_includes_app_bypass():
     assert body["bypass_actors"] == [
         {"actor_id": 42, "actor_type": "Integration", "bypass_mode": "always"}
     ]
+
+
+def test_summary_is_a_noop_without_github_step_summary(tmp_path, monkeypatch):
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    write_run_summary(command="plan", config_path="repo.yaml", result="sin cambios")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_summary_appends_markdown_for_a_run(tmp_path, monkeypatch):
+    summary = tmp_path / "summary.md"
+    summary.write_text("existing\n", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    write_run_summary(
+        command="apply",
+        config_path="configs/single-app.yaml",
+        repo="octocat/demo",
+        result="applied 1 change(s)",
+        changes=[Change("add", "ruleset main")],
+    )
+    text = summary.read_text(encoding="utf-8")
+    assert text.startswith("existing\n")
+    assert "## Litch `apply`" in text
+    assert "configs/single-app.yaml" in text
+    assert "octocat/demo" in text
+    assert "applied 1 change(s)" in text
+    assert "+ ruleset main" in text
+
+
+def test_summary_includes_errors(tmp_path, monkeypatch):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    write_run_summary(
+        command="plan",
+        config_path="repo.yaml",
+        result="failed",
+        error="missing GitHub App secrets in vault: litch-github-app-pem",
+    )
+    text = summary.read_text(encoding="utf-8")
+    assert "### Error" in text
+    assert "missing GitHub App secrets in vault: litch-github-app-pem" in text

@@ -25,6 +25,8 @@ The job requests `id-token: write` and passes the provider variables in `env`. G
 
 `plan` prints the diff and writes nothing. `apply` applies it. `drift` exits with code 1 when something declared does not match. A second run against the same state prints `sin cambios`.
 
+When Litch runs in GitHub Actions, it also appends a short Markdown report to `$GITHUB_STEP_SUMMARY`: command, config, repository, result, and the change list (or the error).
+
 Anything absent from the YAML stays untouched, except users and teams under `access`: removing them from the file removes them from the repository on apply.
 
 ## Configuration
