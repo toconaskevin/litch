@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6",
   "PyNaCl>=1.5",
+  "PyJWT[crypto]>=2",
 ]
 
 [project.scripts]

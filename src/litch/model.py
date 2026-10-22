@@ -2,7 +2,16 @@ from dataclasses import dataclass, field
 
 PERMISSIONS = ("pull", "triage", "push", "maintain", "admin")
 PROVIDERS = ("azure", "aws", "gcp", "local")
-GITHUB_TOKEN_SECRET = "litch-github-token"
+GITHUB_APP_CLIENT_ID = "litch-github-app-client-id"
+GITHUB_APP_ID = "litch-github-app-id"
+GITHUB_APP_INSTALLATION_ID = "litch-github-app-installation-id"
+GITHUB_APP_PEM = "litch-github-app-pem"
+GITHUB_APP_SECRETS = (
+    GITHUB_APP_CLIENT_ID,
+    GITHUB_APP_ID,
+    GITHUB_APP_INSTALLATION_ID,
+    GITHUB_APP_PEM,
+)
 API_VERSION = "litch.dev/v1"
 SPEC_KEYS = frozenset({
     "access",

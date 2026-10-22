@@ -1,12 +1,11 @@
 from litch.diff import Change, diff_config, render_codeowners, render_workflow
 from litch.github_api import GitHub
-from litch.model import GITHUB_TOKEN_SECRET, Config
+from litch.model import Config
 from litch.secrets import SecretSource
 
 
 def collect_values(config: Config, source: SecretSource) -> dict[str, str | None]:
-    names = [GITHUB_TOKEN_SECRET, *[item.name for item in config.secrets]]
-    return {name: source.get(name) for name in names}
+    return {item.name: source.get(item.name) for item in config.secrets}
 
 
 def plan(config: Config, github: GitHub, values: dict[str, str | None]) -> list[Change]:

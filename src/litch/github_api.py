@@ -26,8 +26,9 @@ class GitHubError(RuntimeError):
 
 
 class GitHub:
-    def __init__(self, token: str):
+    def __init__(self, token: str, app_id: int):
         self.token = token
+        self.app_id = app_id
 
     def fetch(self, config: Config) -> Actual:
         repo = self._get(f"/repos/{config.repo}")
@@ -70,7 +71,7 @@ class GitHub:
 
     def put_ruleset(self, config: Config, name: str) -> None:
         rule = next(item for item in config.rulesets if item.name == name)
-        body = _ruleset_body(rule)
+        body = _ruleset_body(rule, self.app_id)
         current = self._ruleset_index(config).get(name)
         if current is None:
             self._request("POST", f"/repos/{config.repo}/rulesets", body)
@@ -222,12 +223,29 @@ class GitHub:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                raise GitHubError(f"github 404 {path}") from None
-            raise GitHubError(f"github {exc.code} {path}") from None
+            detail = _github_detail(exc)
+            message = f"github {exc.code} {path}"
+            if detail:
+                message = f"{message}: {detail}"
+            raise GitHubError(message) from None
         if not raw:
             return {}
         return json.loads(raw.decode("utf-8"))
+
+
+def _github_detail(exc: urllib.error.HTTPError) -> str:
+    raw = exc.read().decode("utf-8", errors="replace").strip()
+    if not raw:
+        return ""
+    try:
+        body = json.loads(raw)
+    except json.JSONDecodeError:
+        return " ".join(raw.split())[:400]
+    if isinstance(body, dict):
+        message = body.get("message")
+        if isinstance(message, str) and message.strip():
+            return " ".join(message.split())
+    return ""
 
 
 def role_name(item: dict) -> str | None:
@@ -246,7 +264,7 @@ def encrypt_secret(public_key: str, value: str) -> str:
     return base64.b64encode(encrypted).decode("ascii")
 
 
-def _ruleset_body(rule) -> dict:
+def _ruleset_body(rule, app_id: int) -> dict:
     rules = []
     if rule.required_reviews or rule.dismiss_stale:
         rules.append(
@@ -278,6 +296,13 @@ def _ruleset_body(rule) -> dict:
         "target": "branch",
         "enforcement": "active",
         "conditions": {"ref_name": {"include": [rule.ref], "exclude": []}},
+        "bypass_actors": [
+            {
+                "actor_id": app_id,
+                "actor_type": "Integration",
+                "bypass_mode": "always",
+            }
+        ],
         "rules": rules,
     }
 
