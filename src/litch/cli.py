@@ -39,27 +39,25 @@ def main(argv: list[str] | None = None) -> int:
         print(change.line())
 
     if args.command == "plan":
-        result = "sin cambios" if not changes else f"{len(changes)} change(s)"
         if not changes:
             print("sin cambios")
         write_run_summary(
             command=args.command,
             config_path=args.config,
             repo=config.repo,
-            result=result,
+            result="no changes" if not changes else f"{len(changes)} change(s)",
             changes=changes,
         )
         return 0
 
     if args.command == "drift":
-        result = "sin cambios" if not changes else f"drift: {len(changes)} change(s)"
         if not changes:
             print("sin cambios")
         write_run_summary(
             command=args.command,
             config_path=args.config,
             repo=config.repo,
-            result=result,
+            result="no changes" if not changes else f"drift: {len(changes)} change(s)",
             changes=changes,
         )
         return 1 if changes else 0
@@ -106,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         command=args.command,
         config_path=args.config,
         repo=config.repo,
-        result="sin cambios",
+        result="no changes",
         changes=changes,
     )
     return 0
